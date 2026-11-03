@@ -1,0 +1,291 @@
+"""The Future Job: job search across Germany using the Federal Employment Agency feed."""
+import os
+from urllib.parse import urlencode
+
+import requests
+from flask import Flask, render_template_string, request
+
+app = Flask(__name__)
+
+API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
+HEADERS = {"X-API-Key": "jobboerse-jobsuche"}
+DETAIL = "https://www.arbeitsagentur.de/jobsuche/jobdetail/"
+PAGE_SIZE = 20
+
+TYPES = {"": "All jobs", "4": "Apprenticeship / dual study", "1": "Regular job",
+         "34": "Internship / trainee", "2": "Self-employed"}
+HOURS = {"": "Any hours", "vz": "Full-time", "tz": "Part-time", "mj": "Mini-job"}
+RADIUS = ["0", "10", "25", "50", "100", "200"]
+
+PAGE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f7f8f5">
+<title>The Future Job — Find your next job in Germany</title>
+<style>
+:root{color-scheme:light;--ink:#17231f;--mute:#64736c;--line:#e4e9e3;--bg:#f7f8f5;--card:#fff;--soft:#eff3ed;--accent:#167a59;--accent-dark:#105c43;--lime:#d8f278;--shadow:0 18px 55px #203b2810}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font:16px/1.55 "Segoe UI",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+a{color:inherit}
+.wrap{width:min(1120px,calc(100% - 40px));margin:auto}
+nav{height:76px;display:flex;align-items:center;justify-content:space-between}
+.brand{font-weight:800;letter-spacing:-.04em;font-size:1.2rem;text-decoration:none}
+.brand-mark{display:inline-grid;place-items:center;width:34px;height:34px;margin-right:8px;border-radius:11px;background:var(--lime);color:var(--accent-dark)}
+.nav-note{font-size:.88rem;color:var(--mute)}
+.hero{position:relative;overflow:hidden;padding:62px 0 75px;background:radial-gradient(ellipse at 82% 45%,#e7f0dd 0,transparent 34%),linear-gradient(130deg,#f7f8f5,#f1f5ec)}
+.hero-inner{position:relative;z-index:1;max-width:720px}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;color:var(--accent-dark);font-size:.82rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.live-dot{width:8px;height:8px;border-radius:50%;background:#32a46f;box-shadow:0 0 0 4px #32a46f22}
+h1{max-width:690px;margin:17px 0 13px;font-size:clamp(2.5rem,6vw,4.4rem);line-height:1.04;letter-spacing:-.065em}
+.hero p{max-width:560px;margin:0;color:var(--mute);font-size:1.06rem}
+.orb-scene{position:absolute;right:5%;top:50%;width:210px;height:210px;perspective:700px;transform:translateY(-50%)}
+.orb{position:absolute;inset:12px;border-radius:50%;background:radial-gradient(circle at 30% 25%,#f6ffd4 0,#c9e977 21%,#75b979 54%,#31856d 78%,#246958 100%);box-shadow:inset -18px -20px 35px #174c3944,0 30px 60px #37795b30;transform-style:preserve-3d;animation:float 7s ease-in-out infinite}
+.orb:before,.orb:after{position:absolute;content:"";border:1px solid #fff9;border-radius:50%;transform:rotateX(68deg) rotateZ(-24deg)}
+.orb:before{inset:22px -18px}.orb:after{inset:44px -12px;transform:rotateX(68deg) rotateZ(38deg)}
+@keyframes float{0%,100%{transform:translateY(0) rotateY(-12deg) rotateX(8deg)}50%{transform:translateY(-13px) rotateY(12deg) rotateX(-5deg)}}
+.search-panel{position:relative;z-index:2;margin-top:-30px;padding:22px;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}
+.search-grid{display:grid;grid-template-columns:1.4fr 1fr .75fr .9fr .9fr auto;gap:10px;align-items:end}
+.field label{display:block;margin:0 0 6px 2px;font-size:.76rem;font-weight:700;color:var(--mute)}
+input,select,button{width:100%;min-width:0;min-height:48px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font:inherit}
+input::placeholder{color:#9aa69e}
+button{cursor:pointer;font-weight:700}
+.search-button{background:var(--accent);border-color:var(--accent);color:#fff;padding-inline:20px}
+.search-button:hover{background:var(--accent-dark)}
+:focus-visible{outline:3px solid #80ba66;outline-offset:3px}
+.quick{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin:17px 2px 0;color:var(--mute);font-size:.82rem}
+.quick a{padding:5px 11px;border:1px solid var(--line);border-radius:99px;background:#fff;text-decoration:none;color:var(--ink)}
+.quick a:hover{border-color:var(--accent);color:var(--accent)}
+main{padding:50px 0 72px}
+.section-head{display:flex;justify-content:space-between;align-items:end;gap:18px;margin-bottom:16px}
+.section-head h2{margin:0;font-size:1.65rem;letter-spacing:-.04em}
+.section-head p{margin:5px 0 0;color:var(--mute);font-size:.9rem}
+.feed-label{color:var(--accent);font-size:.83rem;font-weight:700}
+.source-panel{margin:18px 0 0;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:#fff}
+.source-heading{margin:0 0 10px;color:var(--mute);font-size:.82rem;font-weight:650}
+.source-links{display:flex;flex-wrap:wrap;gap:9px}
+.source-link{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-decoration:none;font-size:.86rem;font-weight:700}
+.source-link:hover{border-color:var(--accent);color:var(--accent)}
+.source-note{margin:10px 0 0;color:var(--mute);font-size:.76rem}
+.results{overflow:hidden;border:1px solid var(--line);border-radius:16px;background:var(--card);box-shadow:var(--shadow)}
+.job{display:grid;grid-template-columns:54px minmax(0,1fr) auto;align-items:center;gap:17px;padding:20px 22px;border-bottom:1px solid var(--line);transition:background .18s ease,transform .18s ease}
+.job:last-child{border-bottom:0}
+.job:hover{background:#fbfcfa}
+.company-mark{display:grid;place-items:center;width:50px;height:50px;border-radius:15px;background:var(--soft);color:var(--accent-dark);font-size:1.05rem;font-weight:800}
+.job h3{margin:0 0 4px;font-size:1.08rem;line-height:1.35;letter-spacing:-.02em}
+.job-title{text-decoration:none}
+.job-title:hover{color:var(--accent)}
+.meta{display:flex;flex-wrap:wrap;gap:5px 13px;color:var(--mute);font-size:.88rem}
+.job-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.tag{padding:3px 9px;border-radius:99px;background:var(--soft);color:#43564a;font-size:.76rem}
+.posted{color:var(--mute);font-size:.78rem;white-space:nowrap}
+.save-job{width:auto;min-height:38px;padding:7px 11px;border-color:var(--line);background:#fff;font-size:.81rem}
+.save-job[aria-pressed=true]{border-color:#b9dcae;background:#f1f8ed;color:var(--accent-dark)}
+.empty,.err{padding:24px;color:var(--mute)}
+.err{border:1px solid #f0dfc0;border-radius:13px;background:#fffaf0;color:#6b5429}
+.pager{display:flex;justify-content:space-between;gap:12px;margin-top:20px}
+.pager a{padding:10px 15px;border:1px solid var(--line);border-radius:10px;background:var(--card);text-decoration:none;font-weight:650}
+.pager a:hover{border-color:var(--accent);color:var(--accent)}
+footer{padding:22px 0;border-top:1px solid var(--line);color:var(--mute);font-size:.82rem}
+@media(max-width:900px){.search-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.search-button{grid-column:span 3}.orb-scene{right:1%;opacity:.65}}
+@media(max-width:600px){.wrap{width:min(100% - 28px,1120px)}nav{height:64px}.nav-note{font-size:.75rem}.hero{padding:45px 0 58px}.hero-inner{max-width:84%}.hero p{font-size:.96rem}.orb-scene{right:-90px;opacity:.34;width:180px;height:180px}.search-panel{padding:15px;border-radius:14px}.search-grid{grid-template-columns:1fr 1fr}.field:first-child,.search-button{grid-column:1/-1}.search-button{grid-column:1/-1}.quick{gap:7px}.section-head{align-items:start;flex-direction:column}.job{grid-template-columns:42px minmax(0,1fr);gap:12px;padding:16px}.company-mark{width:42px;height:42px;border-radius:13px}.job-actions{grid-column:2;display:flex;justify-content:space-between;align-items:center}.posted{white-space:normal}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+</style></head><body>
+<nav class="wrap" aria-label="Main navigation">
+  <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">F</span>The Future Job</a>
+  <span class="nav-note">Fresh opportunities. A brighter next step.</span>
+</nav>
+<header class="hero">
+  <div class="wrap hero-inner">
+    <span class="eyebrow"><span class="live-dot" aria-hidden="true"></span>New opportunities, every day</span>
+    <h1>Your future<br>starts with a job.</h1>
+    <p>Discover current jobs from Germany’s Federal Employment Agency. Search by role, location, and working hours, then compare results on Indeed and XING.</p>
+  </div>
+  <div class="orb-scene" aria-hidden="true"><div class="orb"></div></div>
+</header>
+<div class="wrap">
+  <section class="search-panel" aria-label="Find a job">
+    <form method="get" class="search-grid">
+      <div class="field"><label for="what">What are you looking for?</label><input id="what" name="what" value="{{ q.what }}" placeholder="Job title, skill or keyword"></div>
+      <div class="field"><label for="where">Where?</label><input id="where" name="where" value="{{ q.where }}" placeholder="City or postcode"></div>
+      <div class="field"><label for="radius">Distance</label><select id="radius" name="radius">{% for r in radius %}<option value="{{ r }}" {{ 'selected' if r==q.radius }}>{{ 'Exact city' if r=='0' else '+' ~ r ~ ' km' }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="type">Opportunity</label><select id="type" name="type">{% for k,v in types.items() %}<option value="{{ k }}" {{ 'selected' if k==q.type }}>{{ v }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="hours">Working hours</label><select id="hours" name="hours">{% for k,v in hours.items() %}<option value="{{ k }}" {{ 'selected' if k==q.hours }}>{{ v }}</option>{% endfor %}</select></div>
+      <button class="search-button" type="submit">Search jobs <span aria-hidden="true">→</span></button>
+    </form>
+    <div class="quick" aria-label="Popular searches">Popular:
+      <a href="/?what=IT&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">IT</a>
+      <a href="/?what=Logistik&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">Logistics</a>
+      <a href="/?what=Pflege&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">Care</a>
+      <a href="/?type=4&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">Apprenticeships</a>
+    </div>
+  </section>
+  <section class="source-panel" aria-label="Search other job boards">
+    <p class="source-heading">Explore more jobs on</p>
+    <div class="source-links">
+      <a class="source-link" href="{{ source_urls.agency }}" target="_blank" rel="noopener noreferrer">Federal Employment Agency <span aria-hidden="true">↗</span></a>
+      <a class="source-link" href="{{ source_urls.indeed }}" target="_blank" rel="noopener noreferrer">Indeed <span aria-hidden="true">↗</span></a>
+      <a class="source-link" href="{{ source_urls.xing }}" target="_blank" rel="noopener noreferrer">XING <span aria-hidden="true">↗</span></a>
+    </div>
+    <p class="source-note">Each site opens its own live results. Listings from different sites are not combined or duplicated here.</p>
+  </section>
+</div>
+<main class="wrap" id="jobs">
+{% if error %}
+  <div class="err" role="alert"><strong>We couldn’t load listings from the Agency feed.</strong><br>{{ error }} Use the matching links above to search directly on each job board.</div>
+{% else %}
+  <div class="section-head">
+    <div><h2>{% if q.what %}{{ q.what }} jobs{% else %}New opportunities{% endif %}</h2><p>{{ total }} current Agency listings{% if q.where %} around {{ q.where }}{% endif %} · Listings refresh when you search</p></div>
+    <span class="feed-label"><span class="live-dot" aria-hidden="true"></span> &nbsp;Agency feed</span>
+  </div>
+  <div class="results" id="results" aria-live="polite">
+  {% for j in results %}
+    <article class="job" data-job-id="{{ j.id }}">
+      <div class="company-mark" aria-hidden="true">{{ j.employer[:1]|upper if j.employer else 'J' }}</div>
+      <div>
+        <h3><a class="job-title" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">{{ j.title }}</a></h3>
+        <div class="meta"><span>{{ j.employer }}</span><span>{{ j.place }}</span>{% if j.start %}<span>Starts {{ j.start }}</span>{% endif %}</div>
+        <div class="job-tags">{% if j.profession %}<span class="tag">{{ j.profession }}</span>{% endif %}{% if j.posted %}<span class="tag">Posted {{ j.posted }}</span>{% endif %}</div>
+      </div>
+      <div class="job-actions"><span class="posted">Official listing ↗</span><button class="save-job" type="button" aria-pressed="false" aria-label="Save {{ j.title }}">☆ Save</button></div>
+    </article>
+  {% else %}
+    <p class="empty">No jobs found for these filters. Try another keyword, job type, or a wider search radius.</p>
+  {% endfor %}
+  </div>
+  <div class="pager">
+    {% if page > 1 %}<a href="{{ prev_url }}#jobs">← Previous</a>{% else %}<span></span>{% endif %}
+    {% if has_next %}<a href="{{ next_url }}#jobs">More jobs →</a>{% endif %}
+  </div>
+{% endif %}
+</main>
+<footer><div class="wrap">The Future Job · Listings are provided by the Federal Employment Agency. Select a role to view the original posting and apply.</div></footer>
+<script>
+(() => {
+  const storageKey = "jobsuche-saved-jobs";
+  const buttons = [...document.querySelectorAll(".save-job")];
+  let saved = new Set();
+  let storageAvailable = true;
+  try {
+    saved = new Set(JSON.parse(localStorage.getItem(storageKey) || "[]"));
+  } catch {
+    storageAvailable = false;
+  }
+  buttons.forEach(button => {
+    const id = button.closest(".job").dataset.jobId;
+    if (!storageAvailable) {
+      button.disabled = true;
+      button.title = "Saving jobs is unavailable in this browser session.";
+      return;
+    }
+    const update = () => {
+      const isSaved = saved.has(id);
+      button.setAttribute("aria-pressed", String(isSaved));
+      button.textContent = isSaved ? "★ Saved" : "☆ Save";
+    };
+    update();
+    button.addEventListener("click", () => {
+      if (saved.has(id)) saved.delete(id);
+      else saved.add(id);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify([...saved]));
+        update();
+      } catch {
+        button.disabled = true;
+        button.title = "Your browser could not save this job. Check your storage settings.";
+      }
+    });
+  });
+})();
+</script>
+</body></html>"""
+
+
+def search(q, page):
+    params = {"page": page, "size": PAGE_SIZE}
+    if q["what"]:
+        params["was"] = q["what"]
+    if q["where"]:
+        params["wo"] = q["where"]
+        if q["radius"] != "0":
+            params["umkreis"] = q["radius"]
+    if q["type"]:
+        params["angebotsart"] = q["type"]
+    if q["hours"]:
+        params["arbeitszeit"] = q["hours"]
+    r = requests.get(API, params=params, headers=HEADERS, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    jobs = []
+    for s in data.get("stellenangebote", []):
+        loc = s.get("arbeitsort", {})
+        jobs.append({
+            "id": s.get("refnr", ""),
+            "title": s.get("titel") or s.get("beruf") or "Untitled",
+            "employer": s.get("arbeitgeber", "Not listed"),
+            "place": " ".join(x for x in (loc.get("plz"), loc.get("ort")) if x) or "Germany",
+            "profession": s.get("beruf", ""),
+            "start": s.get("eintrittsdatum", ""),
+            "posted": s.get("aktuelleVeroeffentlichungsdatum", ""),
+            "url": DETAIL + s.get("refnr", ""),
+        })
+    return jobs, int(data.get("maxErgebnisse", len(jobs)))
+
+
+def source_urls(q):
+    terms = q["what"]
+    location = q["where"]
+    return {
+        "agency": "https://www.arbeitsagentur.de/jobsuche/suche?" + urlencode({
+            key: value for key, value in (("was", terms), ("wo", location), ("suchbereich", "jobs"))
+            if value
+        }),
+        "indeed": "https://de.indeed.com/jobs?" + urlencode({
+            key: value for key, value in (("q", terms), ("l", location)) if value
+        }),
+        "xing": "https://www.xing.com/jobs/search?" + urlencode({
+            key: value for key, value in (("keywords", terms), ("location", location)) if value
+        }),
+    }
+
+
+@app.route("/")
+def index():
+    q = {
+        "what": request.args.get("what", "").strip(),
+        "where": request.args.get("where", "").strip(),
+        "radius": request.args.get("radius", "25"),
+        "type": request.args.get("type", ""),
+        "hours": request.args.get("hours", ""),
+    }
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    results, total, error = [], 0, None
+    try:
+        results, total = search(q, page)
+    except (requests.RequestException, ValueError) as e:
+        details = (
+            f"HTTP {e.response.status_code}"
+            if isinstance(e, requests.HTTPError) and e.response is not None
+            else e.__class__.__name__
+        )
+        error = ("Could not load results from the Jobsuche service. "
+                 f"Check your internet connection and try again. ({details})")
+    base = request.args.to_dict()
+    prev_url = "?" + urlencode({**base, "page": page - 1})
+    next_url = "?" + urlencode({**base, "page": page + 1})
+    return render_template_string(
+        PAGE, q=q, types=TYPES, hours=HOURS, radius=RADIUS, results=results, total=total,
+        error=error, page=page, has_next=page * PAGE_SIZE < total, prev_url=prev_url, next_url=next_url,
+        source_urls=source_urls(q))
+
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
