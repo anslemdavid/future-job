@@ -2,18 +2,20 @@
 
 **A simpler way to find your next opportunity.**
 
-The Future Job is a lightweight job-search website for people looking for work in Germany. Search current vacancies from the Federal Employment Agency, compare the same search on Indeed or XING, and save interesting opportunities in your browser.
+The Future Job is a lightweight job-search website for people looking for work in Germany and Europe. Browse current employer-submitted vacancies, search by role, location, and work arrangement, compare searches on other job boards, and save interesting roles in your browser.
 
 ## What it does
 
-- Searches the Federal Employment Agency's live job-search feed by keyword, location, distance, job type, and working hours.
-- Shows the employer, location, profession, start date, and publication date supplied with each listing.
-- Provides direct links to search the same keywords and location on Indeed and XING.
+- Displays live jobs from Arbeitnow's public Job Board API, including employer, location, tags, publication date, and a link to the original listing.
+- Searches loaded listings by role, employer, description, tags, location, opportunity type, and schedule.
+- Provides direct links to search the same keywords and location on the Federal Employment Agency, Indeed, XING, and Arbeitnow.
 - Saves jobs in the current browser using local storage; there are no accounts or tracking profiles.
 - Works on mobile and desktop, supports keyboard focus and reduced-motion preferences, and includes a small animated 3D-style visual.
 - Includes a `/health` endpoint for hosting-platform health checks.
 
-Listings refresh when someone searches; this project does not fabricate vacancies or claim to merge results from different providers. Application details and availability are managed by the site that published each job. If the official feed cannot be reached, the app clearly reports that and keeps links to the other job boards available.
+The API currently returns up to 300 recent jobs per page, primarily from European employers and applicant-tracking systems. The app caches a successful feed response for up to one hour to reduce unnecessary requests. Arbeitnow states that its listings are updated hourly; actual job availability is controlled by the original publisher. If the API is unavailable, the app reports the problem rather than showing made-up listings.
+
+Arbeitnow requests that API users link back to its site. The app includes provider attribution and a direct link to Arbeitnow. Read the [API documentation](https://www.arbeitnow.com/blog/job-board-api) and [terms of service](https://www.arbeitnow.com/terms) before deploying or changing how its data is used. Indeed and XING are not scraped or republished; their links open each site's own search results.
 
 ## Run locally
 
@@ -28,6 +30,12 @@ python app.py
 
 Open <http://127.0.0.1:5000>.
 
+## Tests
+
+```powershell
+python -m unittest discover -s tests
+```
+
 ## Deploy on Render
 
 1. Push the contents of this folder to a GitHub repository.
@@ -35,7 +43,7 @@ Open <http://127.0.0.1:5000>.
 3. Create the web service. Render installs `requirements.txt` and launches the app with Gunicorn.
 4. Open Render's generated `onrender.com` address and check `/health`.
 
-The free Render plan may spin down after inactivity. The jobs feed is a live external service, so availability and the freshness of listings depend on the Federal Employment Agency. When the feed is unavailable, the website reports the problem rather than showing made-up jobs.
+The free Render plan may spin down after inactivity. The job feed is a live external service, so availability depends on Arbeitnow. When the feed is unavailable, the site reports the issue and serves the last successful cached listings when available.
 
 ## Project files
 
@@ -46,4 +54,4 @@ The free Render plan may spin down after inactivity. The jobs feed is a live ext
 
 ## Data and privacy
 
-Searches are sent to the Federal Employment Agency's public job-search service. Indeed and XING open separately and return their own results; this app does not scrape or combine their job listings. Saved job IDs stay in the user's browser local storage.
+Search terms are applied to the public Arbeitnow feed in the app. Indeed, XING, and the Federal Employment Agency open separately and return their own results; this app does not scrape or combine their job listings. Saved job IDs stay in the user's browser local storage.

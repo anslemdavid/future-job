@@ -1,5 +1,10 @@
-"""The Future Job: job search across Germany using the Federal Employment Agency feed."""
+"""The Future Job: live job search powered by the Arbeitnow Job Board API."""
+import html
 import os
+import re
+import threading
+import time
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import requests
@@ -7,16 +12,29 @@ from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
-API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
-HEADERS = {"X-API-Key": "jobboerse-jobsuche"}
-DETAIL = "https://www.arbeitsagentur.de/jobsuche/jobdetail/"
+API = "https://www.arbeitnow.com/api/job-board-api"
 PAGE_SIZE = 20
+CACHE_SECONDS = 60 * 60
+_cache_lock = threading.Lock()
+_job_cache = []
+_cache_updated_at = 0.0
+_cache_fetched_at = 0.0
 
-TYPES = {"": "All jobs", "4": "Apprenticeship / dual study", "1": "Regular job",
-         "34": "Internship / trainee", "2": "Self-employed"}
-HOURS = {"": "Any hours", "vz": "Full-time", "tz": "Part-time", "mj": "Mini-job"}
-RADIUS = ["0", "10", "25", "50", "100", "200"]
-
+TYPES = {
+    "": "All opportunities",
+    "apprenticeship": "Apprenticeship",
+    "internship": "Internship",
+    "permanent": "Permanent role",
+    "contract": "Contract",
+    "freelance": "Freelance",
+}
+HOURS = {
+    "": "Any schedule",
+    "full-time": "Full-time",
+    "part-time": "Part-time",
+    "mini-job": "Mini-job",
+    "remote": "Remote",
+}
 PAGE = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -45,7 +63,7 @@ h1{max-width:690px;margin:17px 0 13px;font-size:clamp(2.5rem,6vw,4.4rem);line-he
 .orb:before{inset:22px -18px}.orb:after{inset:44px -12px;transform:rotateX(68deg) rotateZ(38deg)}
 @keyframes float{0%,100%{transform:translateY(0) rotateY(-12deg) rotateX(8deg)}50%{transform:translateY(-13px) rotateY(12deg) rotateX(-5deg)}}
 .search-panel{position:relative;z-index:2;margin-top:-30px;padding:22px;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}
-.search-grid{display:grid;grid-template-columns:1.4fr 1fr .75fr .9fr .9fr auto;gap:10px;align-items:end}
+.search-grid{display:grid;grid-template-columns:1.5fr 1fr 1fr auto;gap:10px;align-items:end}
 .field label{display:block;margin:0 0 6px 2px;font-size:.76rem;font-weight:700;color:var(--mute)}
 input,select,button{width:100%;min-width:0;min-height:48px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font:inherit}
 input::placeholder{color:#9aa69e}
@@ -99,7 +117,7 @@ footer{padding:22px 0;border-top:1px solid var(--line);color:var(--mute);font-si
   <div class="wrap hero-inner">
     <span class="eyebrow"><span class="live-dot" aria-hidden="true"></span>New opportunities, every day</span>
     <h1>Your future<br>starts with a job.</h1>
-    <p>Discover current jobs from Germany’s Federal Employment Agency. Search by role, location, and working hours, then compare results on Indeed and XING.</p>
+    <p>Explore fresh job opportunities from employers across Germany and Europe. Search by role, location, and schedule, then compare vacancies on leading job boards.</p>
   </div>
   <div class="orb-scene" aria-hidden="true"><div class="orb"></div></div>
 </header>
@@ -108,35 +126,36 @@ footer{padding:22px 0;border-top:1px solid var(--line);color:var(--mute);font-si
     <form method="get" class="search-grid">
       <div class="field"><label for="what">What are you looking for?</label><input id="what" name="what" value="{{ q.what }}" placeholder="Job title, skill or keyword"></div>
       <div class="field"><label for="where">Where?</label><input id="where" name="where" value="{{ q.where }}" placeholder="City or postcode"></div>
-      <div class="field"><label for="radius">Distance</label><select id="radius" name="radius">{% for r in radius %}<option value="{{ r }}" {{ 'selected' if r==q.radius }}>{{ 'Exact city' if r=='0' else '+' ~ r ~ ' km' }}</option>{% endfor %}</select></div>
       <div class="field"><label for="type">Opportunity</label><select id="type" name="type">{% for k,v in types.items() %}<option value="{{ k }}" {{ 'selected' if k==q.type }}>{{ v }}</option>{% endfor %}</select></div>
       <div class="field"><label for="hours">Working hours</label><select id="hours" name="hours">{% for k,v in hours.items() %}<option value="{{ k }}" {{ 'selected' if k==q.hours }}>{{ v }}</option>{% endfor %}</select></div>
       <button class="search-button" type="submit">Search jobs <span aria-hidden="true">→</span></button>
     </form>
     <div class="quick" aria-label="Popular searches">Popular:
-      <a href="/?what=IT&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">IT</a>
-      <a href="/?what=Logistik&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">Logistics</a>
-      <a href="/?what=Pflege&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">Care</a>
-      <a href="/?type=4&amp;where={{ q.where|urlencode }}&amp;radius={{ q.radius }}">Apprenticeships</a>
+      <a href="/?what=IT&amp;where={{ q.where|urlencode }}">IT</a>
+      <a href="/?what=Logistik&amp;where={{ q.where|urlencode }}">Logistics</a>
+      <a href="/?what=Pflege&amp;where={{ q.where|urlencode }}">Care</a>
+      <a href="/?type=apprenticeship&amp;where={{ q.where|urlencode }}">Apprenticeships</a>
     </div>
   </section>
   <section class="source-panel" aria-label="Search other job boards">
     <p class="source-heading">Explore more jobs on</p>
     <div class="source-links">
       <a class="source-link" href="{{ source_urls.agency }}" target="_blank" rel="noopener noreferrer">Federal Employment Agency <span aria-hidden="true">↗</span></a>
+      <a class="source-link" href="https://www.arbeitnow.com/" target="_blank" rel="noopener noreferrer">Arbeitnow <span aria-hidden="true">↗</span></a>
       <a class="source-link" href="{{ source_urls.indeed }}" target="_blank" rel="noopener noreferrer">Indeed <span aria-hidden="true">↗</span></a>
       <a class="source-link" href="{{ source_urls.xing }}" target="_blank" rel="noopener noreferrer">XING <span aria-hidden="true">↗</span></a>
     </div>
-    <p class="source-note">Each site opens its own live results. Listings from different sites are not combined or duplicated here.</p>
+    <p class="source-note">Live listings are supplied by <a href="https://www.arbeitnow.com/blog/job-board-api" target="_blank" rel="noopener noreferrer">Arbeitnow’s public job API</a>. Other boards open separately; their listings are not copied or mixed in.</p>
   </section>
 </div>
 <main class="wrap" id="jobs">
 {% if error %}
-  <div class="err" role="alert"><strong>We couldn’t load listings from the Agency feed.</strong><br>{{ error }} Use the matching links above to search directly on each job board.</div>
+  <div class="err" role="alert"><strong>Live job listings are temporarily unavailable.</strong><br>{{ error }} You can still search the linked job boards above.</div>
 {% else %}
+  {% if warning %}<p class="feed-status warning" role="status">{{ warning }}</p>{% else %}<p class="feed-status">Live feed · Updated hourly by Arbeitnow{% if updated_at %} · Last checked {{ updated_at }} UTC{% endif %}</p>{% endif %}
   <div class="section-head">
-    <div><h2>{% if q.what %}{{ q.what }} jobs{% else %}New opportunities{% endif %}</h2><p>{{ total }} current Agency listings{% if q.where %} around {{ q.where }}{% endif %} · Listings refresh when you search</p></div>
-    <span class="feed-label"><span class="live-dot" aria-hidden="true"></span> &nbsp;Agency feed</span>
+    <div><h2>{% if q.what %}{{ q.what }} jobs{% else %}New opportunities{% endif %}</h2><p>{{ total }} live listings{% if q.where %} matching {{ q.where }}{% endif %} · Filtered from employer-submitted postings</p></div>
+    <span class="feed-label"><span class="live-dot" aria-hidden="true"></span> &nbsp;Live jobs</span>
   </div>
   <div class="results" id="results" aria-live="polite">
   {% for j in results %}
@@ -144,10 +163,10 @@ footer{padding:22px 0;border-top:1px solid var(--line);color:var(--mute);font-si
       <div class="company-mark" aria-hidden="true">{{ j.employer[:1]|upper if j.employer else 'J' }}</div>
       <div>
         <h3><a class="job-title" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">{{ j.title }}</a></h3>
-        <div class="meta"><span>{{ j.employer }}</span><span>{{ j.place }}</span>{% if j.start %}<span>Starts {{ j.start }}</span>{% endif %}</div>
-        <div class="job-tags">{% if j.profession %}<span class="tag">{{ j.profession }}</span>{% endif %}{% if j.posted %}<span class="tag">Posted {{ j.posted }}</span>{% endif %}</div>
+        <div class="meta"><span>{{ j.employer }}</span><span>{{ j.place }}</span></div>
+        <div class="job-tags">{% for tag in j.tags[:3] %}<span class="tag">{{ tag }}</span>{% endfor %}<span class="tag source-tag">via Arbeitnow</span></div>
       </div>
-      <div class="job-actions"><span class="posted">Official listing ↗</span><button class="save-job" type="button" aria-pressed="false" aria-label="Save {{ j.title }}">☆ Save</button></div>
+      <div class="job-actions"><span class="posted">Posted {{ j.posted }}</span><button class="save-job" type="button" aria-pressed="false" aria-label="Save {{ j.title }}">☆ Save</button></div>
     </article>
   {% else %}
     <p class="empty">No jobs found for these filters. Try another keyword, job type, or a wider search radius.</p>
@@ -159,7 +178,7 @@ footer{padding:22px 0;border-top:1px solid var(--line);color:var(--mute);font-si
   </div>
 {% endif %}
 </main>
-<footer><div class="wrap">The Future Job · Listings are provided by the Federal Employment Agency. Select a role to view the original posting and apply.</div></footer>
+<footer><div class="wrap">The Future Job · Listings provided by <a href="https://www.arbeitnow.com/" target="_blank" rel="noopener noreferrer">Arbeitnow</a>. Confirm the details and apply on the original job posting.</div></footer>
 <script>
 (() => {
   const storageKey = "jobsuche-saved-jobs";
@@ -201,35 +220,112 @@ footer{padding:22px 0;border-top:1px solid var(--line);color:var(--mute);font-si
 </body></html>"""
 
 
+def fetch_jobs():
+    global _job_cache, _cache_updated_at, _cache_fetched_at
+    with _cache_lock:
+        now = time.monotonic()
+        if _cache_fetched_at and now - _cache_updated_at < CACHE_SECONDS:
+            return _job_cache, _cache_fetched_at, None
+        try:
+            response = requests.get(API, params={"page": 1}, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            if _cache_fetched_at:
+                return _job_cache, _cache_fetched_at, "The live feed is temporarily unavailable; showing the last successful refresh."
+            raise
+
+        records = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(records, list):
+            if _cache_fetched_at:
+                return _job_cache, _cache_fetched_at, "The live feed returned unexpected data; showing the last successful refresh."
+            raise ValueError("The job feed returned an unexpected response.")
+
+        jobs = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            slug = str(record.get("slug") or "").strip()
+            title = str(record.get("title") or "").strip()
+            if not slug or not title:
+                continue
+            target = str(record.get("url") or "")
+            if not target.startswith("https://www.arbeitnow.com/jobs/"):
+                target = "https://www.arbeitnow.com/"
+            created_at = record.get("created_at")
+            try:
+                posted = datetime.fromtimestamp(int(created_at), timezone.utc).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, OSError, OverflowError):
+                posted = "Date unavailable"
+            tags = record.get("tags")
+            job_types = record.get("job_types")
+            description = " ".join(
+                html.unescape(re.sub(r"<[^>]*>", " ", str(record.get("description") or ""))).split()
+            )
+            jobs.append({
+                "id": slug,
+                "title": title,
+                "employer": str(record.get("company_name") or "Employer not listed").strip(),
+                "place": str(record.get("location") or "Location not listed").strip(),
+                "tags": [str(tag) for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else [],
+                "job_types": [str(kind) for kind in job_types if isinstance(kind, str)] if isinstance(job_types, list) else [],
+                "description": description,
+                "remote": bool(record.get("remote")),
+                "posted": posted,
+                "url": target,
+            })
+
+        _job_cache = jobs
+        _cache_updated_at = time.monotonic()
+        _cache_fetched_at = time.time()
+        return _job_cache, _cache_fetched_at, None
+
+
+def _contains_all_terms(value, query):
+    normalized = value.casefold()
+    return all(term in normalized for term in query.casefold().split())
+
+
+def _matches_job(job, q):
+    searchable = " ".join(
+        [job["title"], job["employer"], job["place"], job["description"]]
+        + job["tags"] + job["job_types"]
+    )
+    if q["what"] and not _contains_all_terms(searchable, q["what"]):
+        return False
+    if q["where"] and not _contains_all_terms(job["place"], q["where"]):
+        return False
+
+    job_details = " ".join(job["job_types"] + job["tags"] + [job["title"]]).casefold()
+    type_terms = {
+        "apprenticeship": ("apprentice", "ausbildung", "trainee", "dual study"),
+        "internship": ("intern", "praktikum", "stage"),
+        "permanent": ("permanent", "full time", "full-time", "fulltime", "unbefristet", "cdi"),
+        "contract": ("contract", "fixed term", "freelance"),
+        "freelance": ("freelance", "self-employed", "contractor"),
+    }
+    if q["type"] and not any(term in job_details for term in type_terms.get(q["type"], ())):
+        return False
+
+    schedule_terms = {
+        "full-time": ("full time", "full-time", "fulltime"),
+        "part-time": ("part time", "part-time", "parttime", "teilzeit"),
+        "mini-job": ("mini-job", "minijob", "geringfügig"),
+    }
+    if q["hours"] == "remote" and not job["remote"]:
+        return False
+    if q["hours"] in schedule_terms and not any(
+        term in job_details for term in schedule_terms[q["hours"]]
+    ):
+        return False
+    return True
+
+
 def search(q, page):
-    params = {"page": page, "size": PAGE_SIZE}
-    if q["what"]:
-        params["was"] = q["what"]
-    if q["where"]:
-        params["wo"] = q["where"]
-        if q["radius"] != "0":
-            params["umkreis"] = q["radius"]
-    if q["type"]:
-        params["angebotsart"] = q["type"]
-    if q["hours"]:
-        params["arbeitszeit"] = q["hours"]
-    r = requests.get(API, params=params, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    jobs = []
-    for s in data.get("stellenangebote", []):
-        loc = s.get("arbeitsort", {})
-        jobs.append({
-            "id": s.get("refnr", ""),
-            "title": s.get("titel") or s.get("beruf") or "Untitled",
-            "employer": s.get("arbeitgeber", "Not listed"),
-            "place": " ".join(x for x in (loc.get("plz"), loc.get("ort")) if x) or "Germany",
-            "profession": s.get("beruf", ""),
-            "start": s.get("eintrittsdatum", ""),
-            "posted": s.get("aktuelleVeroeffentlichungsdatum", ""),
-            "url": DETAIL + s.get("refnr", ""),
-        })
-    return jobs, int(data.get("maxErgebnisse", len(jobs)))
+    jobs, updated_at, warning = fetch_jobs()
+    matches = [job for job in jobs if _matches_job(job, q)]
+    start = (page - 1) * PAGE_SIZE
+    return matches[start:start + PAGE_SIZE], len(matches), updated_at, warning
 
 
 def source_urls(q):
@@ -240,12 +336,12 @@ def source_urls(q):
             key: value for key, value in (("was", terms), ("wo", location), ("suchbereich", "jobs"))
             if value
         }),
-        "indeed": "https://de.indeed.com/jobs?" + urlencode({
+        "indeed": "https://de.indeed.com/jobs" + ("?" + urlencode({
             key: value for key, value in (("q", terms), ("l", location)) if value
-        }),
-        "xing": "https://www.xing.com/jobs/search?" + urlencode({
+        }) if terms or location else ""),
+        "xing": "https://www.xing.com/jobs/search" + ("?" + urlencode({
             key: value for key, value in (("keywords", terms), ("location", location)) if value
-        }),
+        }) if terms or location else ""),
     }
 
 
@@ -254,32 +350,31 @@ def index():
     q = {
         "what": request.args.get("what", "").strip(),
         "where": request.args.get("where", "").strip(),
-        "radius": request.args.get("radius", "25"),
-        "type": request.args.get("type", ""),
-        "hours": request.args.get("hours", ""),
+        "type": request.args.get("type", "") if request.args.get("type", "") in TYPES else "",
+        "hours": request.args.get("hours", "") if request.args.get("hours", "") in HOURS else "",
     }
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
         page = 1
-    results, total, error = [], 0, None
+    results, total, error, warning, updated_at = [], 0, None, None, None
     try:
-        results, total = search(q, page)
+        results, total, updated, warning = search(q, page)
+        updated_at = datetime.fromtimestamp(updated, timezone.utc).strftime("%Y-%m-%d %H:%M")
     except (requests.RequestException, ValueError) as e:
         details = (
             f"HTTP {e.response.status_code}"
             if isinstance(e, requests.HTTPError) and e.response is not None
             else e.__class__.__name__
         )
-        error = ("Could not load results from the Jobsuche service. "
-                 f"Check your internet connection and try again. ({details})")
+        error = f"Could not load the live Arbeitnow feed. Check your connection and try again. ({details})"
     base = request.args.to_dict()
     prev_url = "?" + urlencode({**base, "page": page - 1})
     next_url = "?" + urlencode({**base, "page": page + 1})
     return render_template_string(
-        PAGE, q=q, types=TYPES, hours=HOURS, radius=RADIUS, results=results, total=total,
+        PAGE, q=q, types=TYPES, hours=HOURS, results=results, total=total,
         error=error, page=page, has_next=page * PAGE_SIZE < total, prev_url=prev_url, next_url=next_url,
-        source_urls=source_urls(q))
+        source_urls=source_urls(q), warning=warning, updated_at=updated_at)
 
 
 @app.route("/health")
